@@ -167,10 +167,10 @@ fn peek(l: *Lexer) u8 {
 }
 
 fn peek_next(l: *Lexer) u8 {
-    if (l.input.len <= l.read_position) {
+    if (l.input.len <= l.position + 1) {
         return 0;
     } else {
-        return l.input[l.read_position];
+        return l.input[l.position + 1];
     }
 }
 
