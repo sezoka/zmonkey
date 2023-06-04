@@ -31,12 +31,12 @@ pub fn init_lexer(input: []const u8) Lexer {
     return l;
 }
 
-fn next_token(l: *Lexer) Token {
+pub fn next_token(l: *Lexer) Token {
+    skip_whitespace(l);
+
     if (is_at_end(l)) {
         return new_token(.eof, "");
     }
-
-    skip_whitespace(l);
 
     const ch_slice = get_literal(l);
     const ch = peek(l);
@@ -72,7 +72,7 @@ fn next_token(l: *Lexer) Token {
         ')' => new_token(.rparen, ch_slice),
         '{' => new_token(.lbrace, ch_slice),
         '}' => new_token(.rbrace, ch_slice),
-        else => {
+        else => blk: {
             if (is_letter(ch)) {
                 const literal = read_identifier(l);
                 const kind = lookup_ident(literal);
@@ -81,7 +81,7 @@ fn next_token(l: *Lexer) Token {
                 const literal = read_number(l);
                 return new_token(.int, literal);
             } else {
-                return new_token(.illegal, "");
+                break :blk new_token(.illegal, "");
             }
         },
     };
