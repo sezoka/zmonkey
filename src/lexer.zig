@@ -3,7 +3,7 @@ const token_mod = @import("token.zig");
 const Token = token_mod.Token;
 const Token_Kind = token_mod.Token_Kind;
 
-const Lexer = struct {
+pub const Lexer = struct {
     input: []const u8,
     position: usize,
     read_position: usize,
