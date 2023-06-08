@@ -46,6 +46,20 @@ pub fn deinit_statement(alloc: std.mem.Allocator, s: ast.Statement) void {
             deinit_program(alloc, ptr);
             alloc.destroy(ptr);
         },
+        .return_ => |ptr| {
+            deinit_expression(alloc, ptr.return_value);
+            alloc.destroy(ptr);
+        },
+    }
+}
+
+pub fn deinit_expression(alloc: std.mem.Allocator, e: ast.Expression) void {
+    switch (e) {
+        .identifier => |ptr| {
+            _ = ptr;
+            _ = alloc;
+            // alloc.destroy(ptr);
+        },
     }
 }
 
@@ -85,8 +99,22 @@ pub fn parse_program(p: *Parser) !?ast.Program {
 fn parse_statement(p: *Parser) !?ast.Statement {
     return switch (p.cur_token.kind) {
         .let => try parse_let_statement(p),
+        .return_ => try parse_return_statement(p),
         else => return null,
     };
+}
+
+fn parse_return_statement(p: *Parser) !?ast.Statement {
+    const stmt_ptr = try p.alloc.create(ast.Return_Statement);
+    stmt_ptr.* = ast.Return_Statement{ .token = p.cur_token, .return_value = undefined };
+
+    next_token(p);
+
+    while (!cur_token_is(p, .semicolon)) {
+        next_token(p);
+    }
+
+    return .{ .return_ = stmt_ptr };
 }
 
 fn parse_let_statement(p: *Parser) !?ast.Statement {
@@ -127,7 +155,7 @@ fn expect_peek(p: *Parser, k: token.Token_Kind) !bool {
     }
 }
 
-test "let statements" {
+test "let statement" {
     const helper = struct {
         pub fn test_let_statement(s: ast.Statement, name: []const u8) !void {
             if (!std.mem.eql(u8, ast.statement_token_literal(s), "let")) {
@@ -147,19 +175,6 @@ test "let statements" {
                 return error.LetStmtNameNotMathing;
             }
         }
-
-        pub fn check_parse_errors(p: *Parser) !void {
-            const errors = get_errors(p);
-            if (errors.len == 0) {
-                return;
-            }
-
-            std.debug.print("parser has {d} errors\n", .{errors.len});
-            for (errors) |msg| {
-                std.debug.print("parser error: {s}\n", .{msg});
-            }
-            return error.FoundParseErrors;
-        }
     };
 
     const input =
@@ -173,7 +188,7 @@ test "let statements" {
     defer deinit_parser(&p);
 
     var program = (try parse_program(&p)) orelse {
-        try helper.check_parse_errors(&p);
+        try check_parse_errors(&p);
 
         std.debug.print("parse_program() returned null\n", .{});
         return error.parseProgramNull;
@@ -197,4 +212,53 @@ test "let statements" {
         const stmt = program.statements[i];
         try helper.test_let_statement(stmt, tt.expected_ident);
     }
+}
+
+test "return statement" {
+    const input =
+        \\ return 5;
+        \\ return 10;
+        \\ return 993322;
+    ;
+
+    var l = lexer.init_lexer(input);
+    var p = init_parser(std.testing.allocator, &l);
+
+    var program = (try parse_program(&p)) orelse {
+        std.debug.print("parse_program() returned null\n", .{});
+        return error.parseProgramNull;
+    };
+    defer deinit_program(std.testing.allocator, &program);
+
+    try check_parse_errors(&p);
+
+    if (program.statements.len != 3) {
+        std.debug.print("program.statements does not contain 3 statements. got='{d}'\n", .{program.statements.len});
+        return error.invalidStatementsCnt;
+    }
+
+    for (program.statements) |stmt| {
+        if (stmt != .return_) {
+            std.debug.print("stmt not *ast.Return_Statement. got={}\n", .{stmt});
+            continue;
+        }
+
+        if (!std.mem.eql(u8, ast.statement_token_literal(stmt), "return")) {
+            const literal = ast.statement_token_literal(stmt);
+            std.debug.print("statement_token_literal(return_stmt) is not 'return', got {s}\n", .{literal});
+        }
+    }
+}
+
+fn check_parse_errors(p: *Parser) !void {
+    const errors = get_errors(p);
+    if (errors.len == 0) {
+        return;
+    }
+
+    std.debug.print("parser has {d} errors\n", .{errors.len});
+    for (errors) |msg| {
+        std.debug.print("parser error: {s}\n", .{msg});
+    }
+    return error.FoundParseErrors;
 }

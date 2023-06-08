@@ -8,6 +8,7 @@ pub const Node = union(enum) {
 pub const Statement = union(enum) {
     program: *Program,
     let: *Let_Statement,
+    return_: *Return_Statement,
 };
 
 pub const Expression = union(enum) {
@@ -22,6 +23,11 @@ pub const Let_Statement = struct {
     token: Token,
     name: Identifier,
     value: Expression,
+};
+
+pub const Return_Statement = struct {
+    token: Token,
+    return_value: Expression,
 };
 
 pub const Identifier = struct {
@@ -44,6 +50,9 @@ pub fn statement_token_literal(stmt: Statement) []const u8 {
             } else {
                 return "<fn>";
             }
+        },
+        .return_ => |rs| {
+            return rs.token.literal;
         },
         .let => |l| {
             return l.token.literal;
