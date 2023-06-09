@@ -3,22 +3,48 @@ const ast = @import("ast.zig");
 const lexer = @import("lexer.zig");
 const token = @import("token.zig");
 
+const Parse_Error = error{
+    OutOfMemory,
+    InvalidInt,
+};
+
+const Prefix_Parse_Fn = *const fn (p: *Parser) Parse_Error!ast.Expression;
+const Infix_Parse_Fn = *const fn (p: *Parser, ast.Expression) Parse_Error!ast.Expression;
+
+const Precedence = enum {
+    lowest,
+    equals,
+    less_greater,
+    sum,
+    product,
+    prefix,
+    call,
+};
+
 pub const Parser = struct {
     lexer: *lexer.Lexer,
     alloc: std.mem.Allocator,
     errors: std.ArrayList([]const u8),
     cur_token: token.Token,
     peek_token: token.Token,
+
+    prefix_parse_fns: std.AutoHashMap(token.Token_Kind, Prefix_Parse_Fn),
+    infix_parse_fns: std.AutoHashMap(token.Token_Kind, Infix_Parse_Fn),
 };
 
-pub fn init_parser(alloc: std.mem.Allocator, l: *lexer.Lexer) Parser {
+pub fn init_parser(alloc: std.mem.Allocator, l: *lexer.Lexer) !Parser {
     var p = Parser{
         .lexer = l,
         .alloc = alloc,
         .errors = std.ArrayList([]const u8).init(alloc),
         .cur_token = undefined,
         .peek_token = undefined,
+        .prefix_parse_fns = std.AutoHashMap(token.Token_Kind, Prefix_Parse_Fn).init(alloc),
+        .infix_parse_fns = std.AutoHashMap(token.Token_Kind, Infix_Parse_Fn).init(alloc),
     };
+
+    try register_prefix(&p, .ident, parse_identifier);
+    try register_prefix(&p, .int, parse_integer_literal);
 
     next_token(&p);
     next_token(&p);
@@ -28,6 +54,8 @@ pub fn init_parser(alloc: std.mem.Allocator, l: *lexer.Lexer) Parser {
 
 pub fn deinit_parser(p: *Parser) void {
     p.errors.deinit();
+    p.prefix_parse_fns.deinit();
+    p.infix_parse_fns.deinit();
 }
 
 pub fn deinit_program(alloc: std.mem.Allocator, p: *ast.Program) void {
@@ -47,7 +75,11 @@ pub fn deinit_statement(alloc: std.mem.Allocator, s: ast.Statement) void {
             alloc.destroy(ptr);
         },
         .return_ => |ptr| {
-            deinit_expression(alloc, ptr.return_value);
+            if (ptr.return_value) |rv| deinit_expression(alloc, rv);
+            alloc.destroy(ptr);
+        },
+        .expr_stmt => |ptr| {
+            if (ptr.expression) |e| deinit_expression(alloc, e);
             alloc.destroy(ptr);
         },
     }
@@ -56,11 +88,30 @@ pub fn deinit_statement(alloc: std.mem.Allocator, s: ast.Statement) void {
 pub fn deinit_expression(alloc: std.mem.Allocator, e: ast.Expression) void {
     switch (e) {
         .identifier => |ptr| {
-            _ = ptr;
-            _ = alloc;
-            // alloc.destroy(ptr);
+            alloc.destroy(ptr);
+        },
+        .int => |ptr| {
+            alloc.destroy(ptr);
         },
     }
+}
+
+fn parse_identifier(p: *Parser) !ast.Expression {
+    const ident_ptr = try p.alloc.create(ast.Identifier);
+    ident_ptr.* = .{
+        .token = p.cur_token,
+        .value = p.cur_token.literal,
+    };
+
+    return .{ .identifier = ident_ptr };
+}
+
+fn register_prefix(p: *Parser, kind: token.Token_Kind, func: Prefix_Parse_Fn) !void {
+    try p.prefix_parse_fns.put(kind, func);
+}
+
+fn register_infix(p: *Parser, kind: token.Token_Kind, func: Prefix_Parse_Fn) !void {
+    try p.prefix_parse_fns.put(kind, func);
 }
 
 fn get_errors(p: *Parser) [][]const u8 {
@@ -100,13 +151,32 @@ fn parse_statement(p: *Parser) !?ast.Statement {
     return switch (p.cur_token.kind) {
         .let => try parse_let_statement(p),
         .return_ => try parse_return_statement(p),
-        else => return null,
+        else => try parse_expression_statement(p),
     };
+}
+
+fn parse_expression_statement(p: *Parser) !ast.Statement {
+    const expr_stmt_ptr = try p.alloc.create(ast.Expression_Statement);
+    expr_stmt_ptr.token = p.cur_token;
+    expr_stmt_ptr.expression = (try parse_expression(p, .lowest));
+
+    if (peek_token_is(p, .semicolon)) {
+        next_token(p);
+    }
+
+    return .{ .expr_stmt = expr_stmt_ptr };
+}
+
+fn parse_expression(p: *Parser, precedence: Precedence) !?ast.Expression {
+    _ = precedence;
+    const prefix = p.prefix_parse_fns.get(p.cur_token.kind).?;
+    const left_exp = try prefix(p);
+    return left_exp;
 }
 
 fn parse_return_statement(p: *Parser) !?ast.Statement {
     const stmt_ptr = try p.alloc.create(ast.Return_Statement);
-    stmt_ptr.* = ast.Return_Statement{ .token = p.cur_token, .return_value = undefined };
+    stmt_ptr.* = ast.Return_Statement{ .token = p.cur_token, .return_value = null };
 
     next_token(p);
 
@@ -135,6 +205,17 @@ fn parse_let_statement(p: *Parser) !?ast.Statement {
     stmt_ptr.name = stmt_name;
 
     return .{ .let = stmt_ptr };
+}
+
+fn parse_integer_literal(p: *Parser) !ast.Expression {
+    const lit_ptr = try p.alloc.create(ast.Integer_Literal);
+    lit_ptr.token = p.cur_token;
+    lit_ptr.value = std.fmt.parseInt(i64, p.cur_token.literal, 10) catch {
+        const msg = try std.fmt.allocPrint(p.alloc, "could not parse {s} as integer", .{p.cur_token.literal});
+        try p.errors.append(msg);
+        return error.InvalidInt;
+    };
+    return .{ .int = lit_ptr };
 }
 
 fn cur_token_is(p: *Parser, k: token.Token_Kind) bool {
@@ -184,7 +265,7 @@ test "let statement" {
     ;
 
     var l = lexer.init_lexer(input);
-    var p = init_parser(std.testing.allocator, &l);
+    var p = try init_parser(std.testing.allocator, &l);
     defer deinit_parser(&p);
 
     var program = (try parse_program(&p)) orelse {
@@ -222,7 +303,8 @@ test "return statement" {
     ;
 
     var l = lexer.init_lexer(input);
-    var p = init_parser(std.testing.allocator, &l);
+    var p = try init_parser(std.testing.allocator, &l);
+    defer deinit_parser(&p);
 
     var program = (try parse_program(&p)) orelse {
         std.debug.print("parse_program() returned null\n", .{});
@@ -247,6 +329,136 @@ test "return statement" {
             const literal = ast.statement_token_literal(stmt);
             std.debug.print("statement_token_literal(return_stmt) is not 'return', got {s}\n", .{literal});
         }
+    }
+}
+
+test "string" {
+    var ident = ast.Identifier{
+        .token = .{
+            .kind = .ident,
+            .literal = "anotherVar",
+        },
+        .value = "anotherVar",
+    };
+
+    var let = ast.Let_Statement{
+        .token = .{
+            .kind = .let,
+            .literal = "let",
+        },
+        .name = .{
+            .token = .{ .kind = .ident, .literal = "myVar" },
+            .value = "myVar",
+        },
+        .value = .{ .identifier = &ident },
+    };
+
+    var statements = [_]ast.Statement{
+        .{ .let = &let },
+    };
+
+    var program = ast.Program{ .statements = &statements };
+
+    const stmt = ast.Statement{ .program = &program };
+
+    var buff = std.ArrayList(u8).init(std.testing.allocator);
+    defer buff.deinit();
+
+    try ast.statement_string(stmt, &buff);
+
+    if (!std.mem.eql(u8, buff.items, "let myVar = anotherVar;")) {
+        std.debug.print("statement_string(stmt, buff) wrong. got='{s}'\n", .{buff.items});
+    }
+}
+
+test "identifier expression" {
+    const input = "foobar;";
+
+    var l = lexer.init_lexer(input);
+    var p = try init_parser(std.testing.allocator, &l);
+    defer deinit_parser(&p);
+
+    var program = (try parse_program(&p)) orelse {
+        std.debug.print("parse_program() returned null\n", .{});
+        return error.parseProgramNull;
+    };
+    defer deinit_program(std.testing.allocator, &program);
+
+    if (program.statements.len != 1) {
+        std.debug.print("program.statements has not enough statements. got='{d}'\n", .{program.statements.len});
+        return error.invalidStatementsCnt;
+    }
+
+    if (program.statements[0] != .expr_stmt) {
+        std.debug.print("program.statements[0] is not ast.Expression_Statement. got={}\n", .{program.statements[0]});
+        return error.InvalidStatement;
+    }
+    const stmt = program.statements[0];
+
+    const exp = stmt.expr_stmt.expression orelse {
+        std.debug.print("no expression in Expression_Statement.\n", .{});
+        return error.NoExpression;
+    };
+    if (exp != .identifier) {
+        std.debug.print("exp not *ast.Identifier. got={}\n", .{stmt.expr_stmt});
+        return error.InvalidExpression;
+    }
+    const ident = exp.identifier;
+
+    if (!std.mem.eql(u8, ident.value, "foobar")) {
+        std.debug.print("ident.value not {s}. got={s}\n", .{ "foobar", ident.value });
+        return error.InvalidIdenifier;
+    }
+    if (!std.mem.eql(u8, ast.expression_token_literal(exp), "foobar")) {
+        std.debug.print(
+            "expression_token_literal(exp) not {s}. got={s}\n",
+            .{ "foobar", ast.expression_token_literal(exp) },
+        );
+        return error.InvalidIdenifier;
+    }
+}
+
+test "integer literal expression" {
+    const input = "5;";
+    var l = lexer.init_lexer(input);
+    var p = try init_parser(std.testing.allocator, &l);
+    defer deinit_parser(&p);
+
+    var program = (try parse_program(&p)) orelse {
+        std.debug.print("parse_program() returned null\n", .{});
+        return error.parseProgramNull;
+    };
+    defer deinit_program(std.testing.allocator, &program);
+    try check_parse_errors(&p);
+
+    if (program.statements.len != 1) {
+        std.debug.print("program has not enough statements. got={d}\n", .{program.statements.len});
+        return error.NotEnoughStatements;
+    }
+
+    if (program.statements[0] != .expr_stmt) {
+        std.debug.print("program.statements[0] is not ast.Expression_Statement. got={}\n", .{program.statements[0]});
+        return error.NotExprStmt;
+    }
+    const stmt = program.statements[0];
+
+    const expr = stmt.expr_stmt.expression orelse {
+        std.debug.print("stmt.expr_stmt.expression is null.\n", .{});
+        return error.ExpressionIsNull;
+    };
+
+    if (expr != .int) {
+        std.debug.print("expr is not ast.Integer_Literal. got={}\n", .{expr});
+        return error.NotIntLiteral;
+    }
+    const literal = expr.int;
+
+    if (literal.value != 5) {
+        std.debug.print("literal.value not {d}. got={d}\n", .{ 5, literal.value });
+        return error.InvalidIntValue;
+    }
+    if (!std.mem.eql(u8, ast.expression_token_literal(expr), "5")) {
+        std.debug.print("literal token_literal not {d}\n", .{ast.expression_token_literal(expr)});
     }
 }
 
