@@ -11,7 +11,7 @@ const Parse_Error = error{
 };
 
 const Prefix_Parse_Fn = *const fn (p: *Parser) Parse_Error!ast.Expression;
-const Infix_Parse_Fn = *const fn (p: *Parser, ast.Expression) Parse_Error!?ast.Expression;
+const Infix_Parse_Fn = *const fn (p: *Parser, left: ast.Expression) Parse_Error!ast.Expression;
 
 const Precedence = enum {
     lowest,
@@ -49,6 +49,15 @@ pub fn init_parser(alloc: std.mem.Allocator, l: *lexer.Lexer) !Parser {
     try register_prefix(&p, .int, parse_integer_literal);
     try register_prefix(&p, .bang, parse_prefix_expression);
     try register_prefix(&p, .minus, parse_prefix_expression);
+
+    try register_infix(&p, .plus, parse_infix_expression);
+    try register_infix(&p, .minus, parse_infix_expression);
+    try register_infix(&p, .slash, parse_infix_expression);
+    try register_infix(&p, .asterisk, parse_infix_expression);
+    try register_infix(&p, .eq, parse_infix_expression);
+    try register_infix(&p, .not_eq, parse_infix_expression);
+    try register_infix(&p, .lt, parse_infix_expression);
+    try register_infix(&p, .gt, parse_infix_expression);
 
     next_token(&p);
     next_token(&p);
@@ -104,7 +113,45 @@ pub fn deinit_expression(alloc: std.mem.Allocator, e: ast.Expression) void {
             deinit_expression(alloc, ptr.right);
             alloc.destroy(ptr);
         },
+        .infix => |ptr| {
+            deinit_expression(alloc, ptr.left);
+            deinit_expression(alloc, ptr.right);
+            alloc.destroy(ptr);
+        },
     }
+}
+
+fn parse_infix_expression(p: *Parser, left: ast.Expression) !ast.Expression {
+    const infix_ptr = try p.alloc.create(ast.Infix_Expression);
+    errdefer p.alloc.destroy(infix_ptr);
+
+    infix_ptr.token = p.cur_token;
+    infix_ptr.operator = p.cur_token.literal;
+    infix_ptr.left = left;
+
+    const precedence = cur_precedence(p);
+    next_token(p);
+    infix_ptr.right = try parse_expression(p, precedence);
+
+    return .{ .infix = infix_ptr };
+}
+
+fn get_precedence(tk: token.Token_Kind) Precedence {
+    return switch (tk) {
+        .eq, .not_eq => .equals,
+        .lt, .gt => .less_greater,
+        .plus, .minus => .sum,
+        .slash, .asterisk => .product,
+        else => .lowest,
+    };
+}
+
+fn peek_precedence(p: *Parser) Precedence {
+    return get_precedence(p.peek_token.kind);
+}
+
+fn cur_precedence(p: *Parser) Precedence {
+    return get_precedence(p.cur_token.kind);
 }
 
 fn parse_prefix_expression(p: *Parser) !ast.Expression {
@@ -133,8 +180,8 @@ fn register_prefix(p: *Parser, kind: token.Token_Kind, func: Prefix_Parse_Fn) !v
     try p.prefix_parse_fns.put(kind, func);
 }
 
-fn register_infix(p: *Parser, kind: token.Token_Kind, func: Prefix_Parse_Fn) !void {
-    try p.prefix_parse_fns.put(kind, func);
+fn register_infix(p: *Parser, kind: token.Token_Kind, func: Infix_Parse_Fn) !void {
+    try p.infix_parse_fns.put(kind, func);
 }
 
 fn get_errors(p: *Parser) [][]const u8 {
@@ -195,13 +242,22 @@ fn parse_expression_statement(p: *Parser) !ast.Statement {
 }
 
 fn parse_expression(p: *Parser, precedence: Precedence) !ast.Expression {
-    _ = precedence;
     const prefix = p.prefix_parse_fns.get(p.cur_token.kind) orelse {
         try no_prefix_parse_fn_error(p, p.cur_token.kind);
         return error.NoPrefix;
     };
+    var left_exp = try prefix(p);
 
-    const left_exp = try prefix(p);
+    while (!peek_token_is(p, .semicolon) and @enumToInt(precedence) < @enumToInt(peek_precedence(p))) {
+        const infix = p.infix_parse_fns.get(p.peek_token.kind) orelse {
+            return left_exp;
+        };
+
+        next_token(p);
+
+        left_exp = try infix(p, left_exp);
+    }
+
     return left_exp;
 }
 
@@ -547,6 +603,46 @@ test "parsing expressions" {
         }
 
         try test_integer_literal(prefix.right, comptime tt.value);
+    }
+}
+
+test "operator precedence parsing" {
+    const tests = [_](struct {
+        input: []const u8,
+        expected: []const u8,
+    }){
+        .{ .input = "-a * b", .expected = "((-a) * b)" },
+        .{ .input = "!-a", .expected = "(!(-a))" },
+        .{ .input = "a + b + c", .expected = "((a + b) + c)" },
+        .{ .input = "a + b - c", .expected = "((a + b) - c)" },
+        .{ .input = "a * b * c", .expected = "((a * b) * c)" },
+        .{ .input = "a * b / c", .expected = "((a * b) / c)" },
+        .{ .input = "a + b / c", .expected = "(a + (b / c))" },
+        .{ .input = "a + b * c + d / e - f", .expected = "(((a + (b * c)) + (d / e)) - f)" },
+        .{ .input = "3 + 4; -5 * 5", .expected = "(3 + 4)((-5) * 5)" },
+        .{ .input = "5 > 4 == 3 < 4", .expected = "((5 > 4) == (3 < 4))" },
+        .{ .input = "5 < 4 != 3 > 4", .expected = "((5 < 4) != (3 > 4))" },
+        .{ .input = "3 + 4 * 5 == 3 * 1 + 4 * 5", .expected = "((3 + (4 * 5)) == ((3 * 1) + (4 * 5)))" },
+    };
+
+    for (tests) |tt| {
+        var l = lexer.init_lexer(tt.input);
+        var p = try init_parser(std.testing.allocator, &l);
+        defer deinit_parser(&p);
+
+        var program = parse_program(&p) catch {
+            return check_parse_errors(&p);
+        };
+        defer deinit_program(std.testing.allocator, &program);
+
+        var actual = std.ArrayList(u8).init(std.testing.allocator);
+        defer actual.deinit();
+        try ast.statement_string(.{ .program = &program }, &actual);
+
+        if (!std.mem.eql(u8, actual.items, tt.expected)) {
+            std.debug.print("expected='{s}', got='{s}'\n", .{ tt.expected, actual.items });
+            return error.UnexpectedResult;
+        }
     }
 }
 

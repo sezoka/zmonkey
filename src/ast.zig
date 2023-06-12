@@ -17,6 +17,7 @@ pub const Expression = union(enum) {
     identifier: *Identifier,
     int: *Integer_Literal,
     prefix: *Prefix_Expression,
+    infix: *Infix_Expression,
 };
 
 pub const Prefix_Expression = struct {
@@ -38,6 +39,13 @@ pub const Let_Statement = struct {
     token: Token,
     name: Identifier,
     value: ?Expression,
+};
+
+pub const Infix_Expression = struct {
+    token: Token,
+    left: Expression,
+    operator: []const u8,
+    right: Expression,
 };
 
 pub const Return_Statement = struct {
@@ -115,8 +123,16 @@ pub fn expression_string(expr: Expression, buff: *std.ArrayList(u8)) !void {
         .prefix => |p| {
             try writer.writeAll("(");
             try writer.writeAll(p.operator);
-            // if (p.right != null) try expression_string(p.right.?, buff);
             try expression_string(p.right, buff);
+            try writer.writeAll(")");
+        },
+        .infix => |i| {
+            try writer.writeAll("(");
+            try expression_string(i.left, buff);
+            try writer.writeAll(" ");
+            try writer.writeAll(i.operator);
+            try writer.writeAll(" ");
+            try expression_string(i.right, buff);
             try writer.writeAll(")");
         },
     }
@@ -148,5 +164,6 @@ pub fn expression_token_literal(expr: Expression) []const u8 {
         .identifier => |i| return i.token.literal,
         .int => |i| return i.token.literal,
         .prefix => |p| return p.token.literal,
+        .infix => |i| return i.token.literal,
     };
 }
