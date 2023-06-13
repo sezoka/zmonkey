@@ -11,6 +11,7 @@ pub const Statement = union(enum) {
     let: *Let_Statement,
     return_: *Return_Statement,
     expr_stmt: *Expression_Statement,
+    block: *Block_Statement,
 };
 
 pub const Expression = union(enum) {
@@ -18,6 +19,8 @@ pub const Expression = union(enum) {
     int: *Integer_Literal,
     prefix: *Prefix_Expression,
     infix: *Infix_Expression,
+    boolean: *Boolean,
+    if_: *If_Expression,
 };
 
 pub const Prefix_Expression = struct {
@@ -48,9 +51,21 @@ pub const Infix_Expression = struct {
     right: Expression,
 };
 
+pub const If_Expression = struct {
+    token: Token,
+    condition: Expression,
+    consequence: *Block_Statement,
+    alternative: ?*Block_Statement,
+};
+
 pub const Return_Statement = struct {
     token: Token,
     return_value: ?Expression,
+};
+
+pub const Block_Statement = struct {
+    token: Token,
+    statements: []Statement,
 };
 
 pub const Identifier = struct {
@@ -61,6 +76,11 @@ pub const Identifier = struct {
 pub const Integer_Literal = struct {
     token: Token,
     value: i64,
+};
+
+pub const Boolean = struct {
+    token: Token,
+    value: bool,
 };
 
 pub fn node_token_literal(node: Node) []const u8 {
@@ -87,8 +107,8 @@ pub fn statement_string(stmt: Statement, buff: *std.ArrayList(u8)) !void {
         },
         .let => |ls| {
             try writer.writeAll(statement_token_literal(stmt));
-            try writer.writeAll(" ");
             try writer.writeAll(ls.name.value);
+            try writer.writeAll(" ");
             try writer.writeAll(" = ");
             if (ls.value) |val| {
                 try expression_string(val, buff);
@@ -108,10 +128,19 @@ pub fn statement_string(stmt: Statement, buff: *std.ArrayList(u8)) !void {
                 try expression_string(e, buff);
             }
         },
+        .block => |b| {
+            for (b.statements) |s| {
+                try statement_string(s, buff);
+            }
+        },
     }
 }
 
-pub fn expression_string(expr: Expression, buff: *std.ArrayList(u8)) !void {
+const Espr_Str_Error = error{
+    OutOfMemory,
+};
+
+pub fn expression_string(expr: Expression, buff: *std.ArrayList(u8)) Espr_Str_Error!void {
     const writer = buff.writer();
     switch (expr) {
         .identifier => |i| {
@@ -135,6 +164,22 @@ pub fn expression_string(expr: Expression, buff: *std.ArrayList(u8)) !void {
             try expression_string(i.right, buff);
             try writer.writeAll(")");
         },
+        .boolean => |b| {
+            try writer.writeAll(b.token.literal);
+        },
+        .if_ => |i| {
+            try writer.writeAll("if (");
+            try expression_string(i.condition, buff);
+            try writer.writeAll(") { ");
+            try statement_string(.{ .block = i.consequence }, buff);
+            try writer.writeAll(" }");
+
+            if (i.alternative != null) {
+                try writer.writeAll(" else { ");
+                try statement_string(.{ .block = i.alternative.? }, buff);
+                try writer.writeAll(" }");
+            }
+        },
     }
 }
 
@@ -147,14 +192,17 @@ pub fn statement_token_literal(stmt: Statement) []const u8 {
                 return "<fn>";
             }
         },
-        .return_ => |rs| {
-            return rs.token.literal;
+        .return_ => |r| {
+            return r.token.literal;
         },
         .let => |l| {
             return l.token.literal;
         },
         .expr_stmt => |es| {
             return es.token.literal;
+        },
+        .block => |b| {
+            return b.token.literal;
         },
     };
 }
@@ -165,5 +213,7 @@ pub fn expression_token_literal(expr: Expression) []const u8 {
         .int => |i| return i.token.literal,
         .prefix => |p| return p.token.literal,
         .infix => |i| return i.token.literal,
+        .boolean => |b| return b.token.literal,
+        .if_ => |i| return i.token.literal,
     };
 }

@@ -7,7 +7,8 @@ const Parse_Error = error{
     OutOfMemory,
     InvalidInt,
     NoPrefix,
-    InvalidToken,
+    UnexpectedToken,
+    UnmatchingParen,
 };
 
 const Prefix_Parse_Fn = *const fn (p: *Parser) Parse_Error!ast.Expression;
@@ -49,6 +50,10 @@ pub fn init_parser(alloc: std.mem.Allocator, l: *lexer.Lexer) !Parser {
     try register_prefix(&p, .int, parse_integer_literal);
     try register_prefix(&p, .bang, parse_prefix_expression);
     try register_prefix(&p, .minus, parse_prefix_expression);
+    try register_prefix(&p, .true_, parse_boolean);
+    try register_prefix(&p, .false_, parse_boolean);
+    try register_prefix(&p, .lparen, parse_group_expression);
+    try register_prefix(&p, .if_, parse_if_expression);
 
     try register_infix(&p, .plus, parse_infix_expression);
     try register_infix(&p, .minus, parse_infix_expression);
@@ -98,6 +103,12 @@ pub fn deinit_statement(alloc: std.mem.Allocator, s: ast.Statement) void {
             if (ptr.expression) |e| deinit_expression(alloc, e);
             alloc.destroy(ptr);
         },
+        .block => |ptr| {
+            for (ptr.statements) |stmt| {
+                deinit_statement(alloc, stmt);
+            }
+            alloc.destroy(ptr);
+        },
     }
 }
 
@@ -118,7 +129,90 @@ pub fn deinit_expression(alloc: std.mem.Allocator, e: ast.Expression) void {
             deinit_expression(alloc, ptr.right);
             alloc.destroy(ptr);
         },
+        .boolean => |ptr| {
+            alloc.destroy(ptr);
+        },
+        .if_ => |ptr| {
+            deinit_expression(alloc, ptr.condition);
+            deinit_statement(alloc, .{ .block = ptr.consequence });
+            if (ptr.alternative != null) deinit_statement(alloc, .{ .block = ptr.alternative.? });
+            alloc.destroy(ptr);
+        },
     }
+}
+
+fn parse_if_expression(p: *Parser) !ast.Expression {
+    const if_ptr = try p.alloc.create(ast.If_Expression);
+    if_ptr.token = p.cur_token;
+    if_ptr.alternative = null;
+
+    if (!try expect_peek(p, .lparen)) {
+        return error.UnexpectedToken;
+    }
+
+    next_token(p);
+    if_ptr.condition = try parse_expression(p, .lowest);
+
+    if (!try expect_peek(p, .rparen)) {
+        return error.UnexpectedToken;
+    }
+
+    if (!try expect_peek(p, .lbrace)) {
+        return error.UnexpectedToken;
+    }
+
+    if_ptr.consequence = try parse_block_statement(p);
+
+    if (peek_token_is(p, .else_)) {
+        next_token(p);
+
+        if (!try expect_peek(p, .lbrace)) {
+            return error.UnexpectedToken;
+        }
+
+        if_ptr.alternative = try parse_block_statement(p);
+    }
+
+    return .{ .if_ = if_ptr };
+}
+
+fn parse_block_statement(p: *Parser) !*ast.Block_Statement {
+    const block_ptr = try p.alloc.create(ast.Block_Statement);
+    block_ptr.token = p.cur_token;
+
+    var statements = std.ArrayList(ast.Statement).init(p.alloc);
+    errdefer statements.deinit();
+
+    next_token(p);
+
+    while (!cur_token_is(p, .rbrace) and !cur_token_is(p, .eof)) {
+        const stmt = try parse_statement(p);
+        try statements.append(stmt);
+        next_token(p);
+    }
+
+    block_ptr.statements = try statements.toOwnedSlice();
+
+    return block_ptr;
+}
+
+fn parse_group_expression(p: *Parser) !ast.Expression {
+    next_token(p);
+
+    const exp = try parse_expression(p, .lowest);
+
+    if (!try expect_peek(p, .rparen)) {
+        return error.UnmatchingParen;
+    }
+
+    return exp;
+}
+
+fn parse_boolean(p: *Parser) !ast.Expression {
+    const bool_ptr = try p.alloc.create(ast.Boolean);
+    bool_ptr.value = cur_token_is(p, .true_);
+    bool_ptr.token = p.cur_token;
+    return .{ .boolean = bool_ptr };
 }
 
 fn parse_infix_expression(p: *Parser, left: ast.Expression) !ast.Expression {
@@ -282,11 +376,11 @@ fn parse_return_statement(p: *Parser) !ast.Statement {
 fn parse_let_statement(p: *Parser) !ast.Statement {
     const stmt_token = p.cur_token;
 
-    if (!try expect_peek(p, .ident)) return error.InvalidToken;
+    if (!try expect_peek(p, .ident)) return error.UnexpectedToken;
 
     const stmt_name = .{ .token = p.cur_token, .value = p.cur_token.literal };
 
-    if (!try expect_peek(p, .assign)) return error.InvalidToken;
+    if (!try expect_peek(p, .assign)) return error.UnexpectedToken;
 
     while (!cur_token_is(p, .semicolon)) {
         next_token(p);
