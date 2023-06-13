@@ -107,6 +107,7 @@ pub fn deinit_statement(alloc: std.mem.Allocator, s: ast.Statement) void {
             for (ptr.statements) |stmt| {
                 deinit_statement(alloc, stmt);
             }
+            alloc.free(ptr.statements);
             alloc.destroy(ptr);
         },
     }
@@ -181,7 +182,7 @@ fn parse_block_statement(p: *Parser) !*ast.Block_Statement {
     block_ptr.token = p.cur_token;
 
     var statements = std.ArrayList(ast.Statement).init(p.alloc);
-    errdefer statements.deinit();
+    defer statements.deinit();
 
     next_token(p);
 
@@ -294,7 +295,7 @@ fn next_token(p: *Parser) void {
 
 pub fn parse_program(p: *Parser) !ast.Program {
     var statements_arr = std.ArrayList(ast.Statement).init(p.alloc);
-    errdefer statements_arr.deinit();
+    defer statements_arr.deinit();
 
     errdefer {
         for (statements_arr.items) |stmt| {
