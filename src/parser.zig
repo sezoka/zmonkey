@@ -54,6 +54,7 @@ pub fn init_parser(alloc: std.mem.Allocator, l: *lexer.Lexer) !Parser {
     try register_prefix(&p, .false_, parse_boolean);
     try register_prefix(&p, .lparen, parse_group_expression);
     try register_prefix(&p, .if_, parse_if_expression);
+    try register_prefix(&p, .function, parse_function_literal);
 
     try register_infix(&p, .plus, parse_infix_expression);
     try register_infix(&p, .minus, parse_infix_expression);
@@ -63,6 +64,7 @@ pub fn init_parser(alloc: std.mem.Allocator, l: *lexer.Lexer) !Parser {
     try register_infix(&p, .not_eq, parse_infix_expression);
     try register_infix(&p, .lt, parse_infix_expression);
     try register_infix(&p, .gt, parse_infix_expression);
+    try register_infix(&p, .lparen, parse_call_expression);
 
     next_token(&p);
     next_token(&p);
@@ -89,6 +91,7 @@ pub fn deinit_program(alloc: std.mem.Allocator, p: *ast.Program) void {
 pub fn deinit_statement(alloc: std.mem.Allocator, s: ast.Statement) void {
     switch (s) {
         .let => |ptr| {
+            deinit_expression(alloc, ptr.value);
             alloc.destroy(ptr);
         },
         .program => |ptr| {
@@ -139,11 +142,123 @@ pub fn deinit_expression(alloc: std.mem.Allocator, e: ast.Expression) void {
             if (ptr.alternative != null) deinit_statement(alloc, .{ .block = ptr.alternative.? });
             alloc.destroy(ptr);
         },
+        .function => |ptr| {
+            for (ptr.parameters) |p| {
+                deinit_expression(alloc, .{ .identifier = p });
+            }
+            alloc.free(ptr.parameters);
+            deinit_statement(alloc, .{ .block = ptr.body });
+            alloc.destroy(ptr);
+        },
+        .call => |ptr| {
+            deinit_expression(alloc, ptr.function);
+            for (ptr.arguments) |arg| {
+                deinit_expression(alloc, arg);
+            }
+            alloc.free(ptr.arguments);
+            alloc.destroy(ptr);
+        },
     }
+}
+
+fn parse_call_expression(p: *Parser, function: ast.Expression) !ast.Expression {
+    const call_ptr = try p.alloc.create(ast.Call_Expression);
+    errdefer p.alloc.destroy(call_ptr);
+
+    call_ptr.function = function;
+    call_ptr.token = p.cur_token;
+    call_ptr.arguments = try parse_call_arguments(p);
+
+    return .{ .call = call_ptr };
+}
+
+fn parse_call_arguments(p: *Parser) ![]ast.Expression {
+    var args = std.ArrayList(ast.Expression).init(p.alloc);
+    errdefer args.deinit();
+
+    if (peek_token_is(p, .rparen)) {
+        next_token(p);
+        return try args.toOwnedSlice();
+    }
+
+    next_token(p);
+    try args.append(try parse_expression(p, .lowest));
+
+    while (peek_token_is(p, .comma)) {
+        next_token(p);
+        next_token(p);
+        try args.append(try parse_expression(p, .lowest));
+    }
+
+    if (!try expect_peek(p, .rparen)) {
+        return error.UnexpectedToken;
+    }
+
+    return args.toOwnedSlice();
+}
+
+fn parse_function_literal(p: *Parser) !ast.Expression {
+    const fn_ptr = try p.alloc.create(ast.Function_Literal);
+    errdefer p.alloc.destroy(fn_ptr);
+
+    fn_ptr.token = p.cur_token;
+
+    if (!try expect_peek(p, .lparen)) {
+        return error.UnexpectedToken;
+    }
+
+    fn_ptr.parameters = try parse_function_parameters(p);
+
+    if (!try expect_peek(p, .lbrace)) {
+        return error.UnexpectedToken;
+    }
+
+    fn_ptr.body = try parse_block_statement(p);
+
+    return .{ .function = fn_ptr };
+}
+
+fn parse_function_parameters(p: *Parser) ![]*ast.Identifier {
+    var identifiers = std.ArrayList(*ast.Identifier).init(p.alloc);
+    errdefer {
+        for (identifiers.items) |ident| {
+            p.alloc.destroy(ident);
+        }
+        identifiers.deinit();
+    }
+
+    if (peek_token_is(p, .rparen)) {
+        next_token(p);
+        return identifiers.toOwnedSlice();
+    }
+
+    next_token(p);
+
+    var ident = try p.alloc.create(ast.Identifier);
+    ident.token = p.cur_token;
+    ident.value = p.cur_token.literal;
+    try identifiers.append(ident);
+
+    while (peek_token_is(p, .comma)) {
+        next_token(p);
+        next_token(p);
+        ident = try p.alloc.create(ast.Identifier);
+        ident.token = p.cur_token;
+        ident.value = p.cur_token.literal;
+        try identifiers.append(ident);
+    }
+
+    if (!try expect_peek(p, .rparen)) {
+        return error.UnexpectedToken;
+    }
+
+    return identifiers.toOwnedSlice();
 }
 
 fn parse_if_expression(p: *Parser) !ast.Expression {
     const if_ptr = try p.alloc.create(ast.If_Expression);
+    errdefer p.alloc.destroy(if_ptr);
+
     if_ptr.token = p.cur_token;
     if_ptr.alternative = null;
 
@@ -237,6 +352,7 @@ fn get_precedence(tk: token.Token_Kind) Precedence {
         .lt, .gt => .less_greater,
         .plus, .minus => .sum,
         .slash, .asterisk => .product,
+        .lparen => .call,
         else => .lowest,
     };
 }
@@ -367,7 +483,7 @@ fn parse_return_statement(p: *Parser) !ast.Statement {
 
     next_token(p);
 
-    while (!cur_token_is(p, .semicolon)) {
+    while (!peek_token_is(p, .semicolon)) {
         next_token(p);
     }
 
@@ -383,19 +499,24 @@ fn parse_let_statement(p: *Parser) !ast.Statement {
 
     if (!try expect_peek(p, .assign)) return error.UnexpectedToken;
 
-    while (!cur_token_is(p, .semicolon)) {
-        next_token(p);
-    }
+    next_token(p);
 
+    const stmt_value = try parse_expression(p, .lowest);
     const stmt_ptr = try p.alloc.create(ast.Let_Statement);
     stmt_ptr.token = stmt_token;
     stmt_ptr.name = stmt_name;
+    stmt_ptr.value = stmt_value;
+
+    if (peek_token_is(p, .semicolon)) {
+        next_token(p);
+    }
 
     return .{ .let = stmt_ptr };
 }
 
 fn parse_integer_literal(p: *Parser) !ast.Expression {
     const lit_ptr = try p.alloc.create(ast.Integer_Literal);
+    errdefer p.alloc.destroy(lit_ptr);
     lit_ptr.token = p.cur_token;
     lit_ptr.value = std.fmt.parseInt(i64, p.cur_token.literal, 10) catch {
         const msg = try std.fmt.allocPrint(p.alloc, "could not parse {s} as integer", .{p.cur_token.literal});

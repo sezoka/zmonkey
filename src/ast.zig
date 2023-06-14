@@ -21,6 +21,8 @@ pub const Expression = union(enum) {
     infix: *Infix_Expression,
     boolean: *Boolean,
     if_: *If_Expression,
+    function: *Function_Literal,
+    call: *Call_Expression,
 };
 
 pub const Prefix_Expression = struct {
@@ -41,7 +43,7 @@ pub const Program = struct {
 pub const Let_Statement = struct {
     token: Token,
     name: Identifier,
-    value: ?Expression,
+    value: Expression,
 };
 
 pub const Infix_Expression = struct {
@@ -56,6 +58,12 @@ pub const If_Expression = struct {
     condition: Expression,
     consequence: *Block_Statement,
     alternative: ?*Block_Statement,
+};
+
+pub const Call_Expression = struct {
+    token: Token,
+    function: Expression,
+    arguments: []Expression,
 };
 
 pub const Return_Statement = struct {
@@ -83,6 +91,12 @@ pub const Boolean = struct {
     value: bool,
 };
 
+pub const Function_Literal = struct {
+    token: Token,
+    parameters: []*Identifier,
+    body: *Block_Statement,
+};
+
 pub fn node_token_literal(node: Node) []const u8 {
     switch (node) {
         .statement => |stmt| statement_token_literal(stmt),
@@ -103,16 +117,15 @@ pub fn statement_string(stmt: Statement, buff: *std.ArrayList(u8)) !void {
         .program => |p| {
             for (p.statements) |s| {
                 try statement_string(s, buff);
+                try writer.writeAll(" ");
             }
         },
         .let => |ls| {
             try writer.writeAll(statement_token_literal(stmt));
-            try writer.writeAll(ls.name.value);
             try writer.writeAll(" ");
+            try writer.writeAll(ls.name.value);
             try writer.writeAll(" = ");
-            if (ls.value) |val| {
-                try expression_string(val, buff);
-            }
+            try expression_string(ls.value, buff);
             try writer.writeAll(";");
         },
         .return_ => |rs| {
@@ -129,9 +142,11 @@ pub fn statement_string(stmt: Statement, buff: *std.ArrayList(u8)) !void {
             }
         },
         .block => |b| {
+            try writer.writeAll("{ ");
             for (b.statements) |s| {
                 try statement_string(s, buff);
             }
+            try writer.writeAll(" }");
         },
     }
 }
@@ -170,15 +185,41 @@ pub fn expression_string(expr: Expression, buff: *std.ArrayList(u8)) Espr_Str_Er
         .if_ => |i| {
             try writer.writeAll("if (");
             try expression_string(i.condition, buff);
-            try writer.writeAll(") { ");
+            try writer.writeAll(") ");
             try statement_string(.{ .block = i.consequence }, buff);
-            try writer.writeAll(" }");
 
             if (i.alternative != null) {
                 try writer.writeAll(" else { ");
                 try statement_string(.{ .block = i.alternative.? }, buff);
                 try writer.writeAll(" }");
             }
+        },
+        .function => |f| {
+            try writer.writeAll(f.token.literal);
+            try writer.writeAll("(");
+            if (f.parameters.len != 0) {
+                for (f.parameters[0 .. f.parameters.len - 1]) |p| {
+                    try expression_string(.{ .identifier = p }, buff);
+                    try writer.writeAll(", ");
+                }
+
+                try expression_string(.{ .identifier = f.parameters[f.parameters.len - 1] }, buff);
+            }
+            try writer.writeAll(")");
+            try statement_string(.{ .block = f.body }, buff);
+        },
+        .call => |c| {
+            try expression_string(c.function, buff);
+            try writer.writeAll("(");
+            if (c.arguments.len != 0) {
+                for (c.arguments[0 .. c.arguments.len - 1]) |a| {
+                    try expression_string(a, buff);
+                    try writer.writeAll(", ");
+                }
+
+                try expression_string(c.arguments[c.arguments.len - 1], buff);
+            }
+            try writer.writeAll(")");
         },
     }
 }
@@ -215,5 +256,7 @@ pub fn expression_token_literal(expr: Expression) []const u8 {
         .infix => |i| return i.token.literal,
         .boolean => |b| return b.token.literal,
         .if_ => |i| return i.token.literal,
+        .function => |f| return f.token.literal,
+        .call => |c| return c.token.literal,
     };
 }
