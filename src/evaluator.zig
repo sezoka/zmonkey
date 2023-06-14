@@ -12,8 +12,51 @@ pub fn eval(node: ast.Node) object.Object {
             const right = eval(ast.expression_to_node(p.right));
             return eval_prefix_expression(p.operator, right);
         },
+        .infix => |i| {
+            const left = eval(ast.expression_to_node(i.left));
+            const right = eval(ast.expression_to_node(i.right));
+            return eval_infix_expression(i.operator, left, right);
+        },
         else => .{ .null_ = .{} },
     };
+}
+
+fn eval_infix_expression(operator: []const u8, left: object.Object, right: object.Object) object.Object {
+    // if (std.mem.eql(u8, operator, "")) {
+    if (object.kind(left) == object.Object_Kind.integer and object.kind(right) == object.Object_Kind.integer) {
+        return eval_integer_infix_expression(operator, left, right);
+    } else if (std.mem.eql(u8, operator, "==")) {
+        return .{ .boolean = .{ .value = std.meta.eql(left, right) } };
+    } else if (std.mem.eql(u8, operator, "!=")) {
+        return .{ .boolean = .{ .value = !std.meta.eql(left, right) } };
+    } else {
+        return .{ .null_ = .{} };
+    }
+}
+
+fn eval_integer_infix_expression(operator: []const u8, left: object.Object, right: object.Object) object.Object {
+    const left_val = left.integer.value;
+    const right_val = right.integer.value;
+
+    if (std.mem.eql(u8, operator, "+")) {
+        return .{ .integer = .{ .value = left_val + right_val } };
+    } else if (std.mem.eql(u8, operator, "-")) {
+        return .{ .integer = .{ .value = left_val - right_val } };
+    } else if (std.mem.eql(u8, operator, "*")) {
+        return .{ .integer = .{ .value = left_val * right_val } };
+    } else if (std.mem.eql(u8, operator, "/")) {
+        return .{ .integer = .{ .value = @divTrunc(left_val, right_val) } };
+    } else if (std.mem.eql(u8, operator, "<")) {
+        return .{ .boolean = .{ .value = left_val < right_val } };
+    } else if (std.mem.eql(u8, operator, ">")) {
+        return .{ .boolean = .{ .value = left_val > right_val } };
+    } else if (std.mem.eql(u8, operator, "==")) {
+        return .{ .boolean = .{ .value = left_val == right_val } };
+    } else if (std.mem.eql(u8, operator, "!=")) {
+        return .{ .boolean = .{ .value = left_val != right_val } };
+    } else {
+        return .{ .null_ = .{} };
+    }
 }
 
 fn eval_prefix_expression(operator: []const u8, right: object.Object) object.Object {
