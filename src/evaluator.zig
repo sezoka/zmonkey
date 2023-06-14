@@ -17,12 +17,33 @@ pub fn eval(node: ast.Node) object.Object {
             const right = eval(ast.expression_to_node(i.right));
             return eval_infix_expression(i.operator, left, right);
         },
+        .block => |b| eval_statements(b.statements),
+        .if_ => |i| eval_if_expression(i),
         else => .{ .null_ = .{} },
     };
 }
 
+fn eval_if_expression(i: *ast.If_Expression) object.Object {
+    const condition = eval(ast.expression_to_node(i.condition));
+
+    if (is_truthy(condition)) {
+        return eval(.{ .block = i.consequence });
+    } else if (i.alternative != null) {
+        return eval(.{ .block = i.alternative.? });
+    } else {
+        return .{ .null_ = .{} };
+    }
+}
+
+fn is_truthy(obj: object.Object) bool {
+    return switch (obj) {
+        .boolean => |b| b.value,
+        .null_ => false,
+        else => true,
+    };
+}
+
 fn eval_infix_expression(operator: []const u8, left: object.Object, right: object.Object) object.Object {
-    // if (std.mem.eql(u8, operator, "")) {
     if (object.kind(left) == object.Object_Kind.integer and object.kind(right) == object.Object_Kind.integer) {
         return eval_integer_infix_expression(operator, left, right);
     } else if (std.mem.eql(u8, operator, "==")) {
