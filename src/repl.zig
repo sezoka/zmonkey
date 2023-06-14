@@ -18,7 +18,10 @@ pub fn start_repl(alloc: std.mem.Allocator) !void {
         var lex = lexer.init_lexer(input);
         var p = try parser.init_parser(alloc, &lex);
         defer parser.deinit_parser(&p);
-        var program = try parser.parse_program(&p);
+        var program = parser.parse_program(&p) catch {
+            try print_parser_errors(out, p.errors.items);
+            continue;
+        };
         defer parser.deinit_program(alloc, &program);
 
         try ast.statement_string(.{ .program = &program }, &buff);
@@ -29,5 +32,11 @@ pub fn start_repl(alloc: std.mem.Allocator) !void {
         // while (tok.kind != .eof) : (tok = lexer.next_token(&lex)) {
         // try out.print("'{s}' -> {}\n", .{ tok.literal, tok.kind });
         // }
+    }
+}
+
+fn print_parser_errors(out: anytype, errors: [][]const u8) !void {
+    for (errors) |msg| {
+        try out.print("\t{s}\n", .{msg});
     }
 }

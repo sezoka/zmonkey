@@ -400,7 +400,7 @@ fn get_errors(p: *Parser) [][]const u8 {
 }
 
 fn peek_error(p: *Parser, k: token.Token_Kind) !void {
-    const msg = try std.fmt.allocPrint(p.alloc, "expected next token to be {}, got {} istead", .{ k, p.peek_token.kind });
+    const msg = try std.fmt.allocPrint(p.alloc, "expected next token to be {}, got {} instead", .{ k, p.peek_token.kind });
     try p.errors.append(msg);
 }
 
