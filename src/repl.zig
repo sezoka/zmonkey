@@ -2,6 +2,8 @@ const std = @import("std");
 const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const ast = @import("ast.zig");
+const evaluator = @import("evaluator.zig");
+const object = @import("object.zig");
 
 pub fn start_repl(alloc: std.mem.Allocator) !void {
     const in = std.io.getStdIn().reader();
@@ -24,9 +26,16 @@ pub fn start_repl(alloc: std.mem.Allocator) !void {
         };
         defer parser.deinit_program(alloc, &program);
 
-        try ast.statement_string(.{ .program = &program }, &buff);
-        std.debug.print("{s}\n", .{buff.items});
+        try ast.node_string(.{ .program = &program }, &buff);
+        try out.print("ast: {s}\n", .{buff.items});
         buff.clearRetainingCapacity();
+
+        const result = evaluator.eval(.{ .program = &program });
+        const stringified = try object.inspect(alloc, result);
+        defer alloc.free(stringified);
+
+        try out.print("eval: {s}\n", .{stringified});
+
         // var tok = lexer.next_token(&lex);
 
         // while (tok.kind != .eof) : (tok = lexer.next_token(&lex)) {
